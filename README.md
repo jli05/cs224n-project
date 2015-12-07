@@ -1,5 +1,6 @@
 # Abstractive Sentence Summarization
 
+## The Algorithm
 An implementation of the Rush, Chopra, Weston work
 <http://arxiv.org/abs/1509.00685>
 
@@ -10,6 +11,7 @@ embedding matrix. Two scenarios are possible:
 2. Context embedding matrix are initialised from Skip-Thought Vectors <http://arxiv.org/abs/1506.06726>, summary from
    GloVe
 
+## The Code
 Helptext is available for running our code by doing:
 
 ```bash

@@ -71,7 +71,7 @@ def conditional_distribution(x, y, text_length, summary_length,
     encoder = get_encoder(params['model'])
     C = params['summary_context_length']
     y_embedding = tparams['Yemb'][y[(summary_length - C):summary_length].flatten(), :]
-    h = T.tanh(T.dot(tparams['U'], y_embedding.flatten()))
+    h = T.tanh(T.dot(tparams['U'], y_embedding.flatten()) + tparams['b'])
     enc = encoder(x, y, text_length, summary_length, params, tparams)
     return T.nnet.softmax(T.dot(tparams['V'], h)
                           + T.dot(tparams['W'], enc)).flatten()
@@ -171,7 +171,7 @@ def save_params_(params, tparams, file_path):
 def init_shared_tparam_(name, shape, value=None,
                         borrow=True, dtype=theano.config.floatX):
     if value is None:
-        value=np.random.uniform(low=-0.1, high=0.1, size=shape)
+        value=np.random.uniform(low=-0.02, high=0.02, size=shape)
     return theano.shared(value=value.astype(dtype), 
                          name=name,
                          borrow=borrow)
@@ -227,6 +227,8 @@ def init_params(model,
     tparams = {
         'U': init_shared_tparam_('U', 
                                  (internal_representation_dim, summary_context_length * embedding_y.token_dim)),
+        'b': init_shared_tparam_('b',
+                                 (internal_representation_dim,)),
         'V': init_shared_tparam_('V', 
                                  (embedding_y.embedding_n_tokens, internal_representation_dim)),
         'W': init_shared_tparam_('W', 

@@ -159,7 +159,7 @@ def training_model_tensors(params, tparams):
                             
         prob = T.set_subtensor(prob[i, range_], prob_.flatten())
 
-    nll = - T.log(prob) * prob_mask    
+    nll = - T.log(prob + 1e-16) * prob_mask    
     return x, y, x_lengths, y_lengths, nll
 
 def load_params_(params, tparams, file_path):
@@ -171,7 +171,7 @@ def save_params_(params, tparams, file_path):
 def init_shared_tparam_(name, shape, value=None,
                         borrow=True, dtype=theano.config.floatX):
     if value is None:
-        value=np.random.uniform(low=-1, high=1, size=shape)
+        value=np.random.uniform(low=-0.1, high=0.1, size=shape)
     return theano.shared(value=value.astype(dtype), 
                          name=name,
                          borrow=borrow)
@@ -402,6 +402,7 @@ def train(model='baseline',
                                   (batch_id + 1) * params['minibatch_size'])
             cost = f_grad_shared(x_train[current_batch, :], y_train[current_batch, :], 
                                  x_lengths_train[current_batch], y_lengths_train[current_batch])
+            print('cost', cost)
 
             # do the update on parameters
             f_update(learning_rate)

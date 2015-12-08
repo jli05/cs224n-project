@@ -33,7 +33,7 @@ def main():
                         default=5,
                         help='summary context length used for training')
     parser.add_argument('--L2-penalty-coeff', type=float,
-                        default=0.0,
+                        default=0.01,
                         help='penalty coefficient to the L2-norms of the model params')
     parser.add_argument('--minibatch-size', type=int,
                         default=20,
@@ -57,7 +57,7 @@ def main():
                         default='word',
                         help='embed full text by word or sentence')
     parser.add_argument('--internal-representation-dim', type=int,
-                        default=1000,
+                        default=3000,
                         help='internal representation dimension')
 
     parser.add_argument('--attention-weight-max-roll', type=int,

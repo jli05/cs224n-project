@@ -17,16 +17,32 @@ from sklearn.cross_validation import train_test_split
 
 
 def get_encoder(model):
-    def baseline_encoder(x, y, text_length, summary_length,
-                         params, tparams):
+    def baseline_encoder(x, y, x_mask, y_pos, params, tparams):
         ''' baseline context encoder given one piece of text
 
+        Returns ctx each row for a training instance
         '''
-        x_embedding = tparams['Xemb'][x[:text_length].flatten(), :]
-        return x_embedding.mean(axis=0)
+        if x.ndim == 1:
+            mb_size = 1
+        elif x.ndim == 2:
+            mb_size = x.shape[0]
+        seq_len = params['seq_maxlen']
+        wv_size = params['word_vector_size']
+        
+        x_emb = tparams['Xemb'][x.flatten(), :]
+        x_emb_masked = T.batched_dot(x_emb, x_mask.flatten())
 
-    def attention_encoder(x, y, text_length, summary_length,
-                          params, tparams):
+        if x.ndim == 1:
+            ctx = x_emb_masked.sum(axis=0) / x_mask.sum()
+        elif x.ndim == 2:
+            ctx = T.batched_dot(
+                x_emb_masked.reshape((mb_size, seq_len, wv_size)).sum(axis=1),
+                1 / x_mask.sum(axis=1)
+            )
+         
+        return ctx 
+
+    def attention_encoder(x, y, x_mask, y_pos, params, tparams):
         ''' attention-based context encoder given one piece of text
 
         '''
@@ -62,28 +78,48 @@ def dropout_layer(state_before, params, tparams):
         )
     return proj
 
-def conditional_distribution(x, y, text_length, summary_length,
-                             params, tparams):
+def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
     ''' Return the conditional distribution of next summary word index
 
     Given the input text tensor and summary tensor, returns the distribution for the next summary word index
     '''
     encoder = get_encoder(params['model'])
     C = params['summary_context_length']
-    y_embedding = tparams['Yemb'][y[(summary_length - C):summary_length].flatten(), :]
-    h = T.tanh(T.dot(tparams['U'], y_embedding.flatten()) + tparams['b'])
-    enc = encoder(x, y, text_length, summary_length, params, tparams)
-    return T.nnet.softmax(T.dot(tparams['V'], h)
-                          + T.dot(tparams['W'], enc)).flatten()
+    wv_size = params['word_vector_size']
 
-def conditional_score(x, y, text_length, j,
-                      params, tparams):
+    if x.ndim == 1:
+        y_emb = tparams['Yemb'][y[(y_pos - C):y_pos].flatten(), :].flatten()
+        h = T.tanh(T.dot(tparams['U'], y_emb) + tparams['b'])
+        ctx = encoder(x, y, x_mask, y_pos, params, tparams)
+
+        u = T.dot(tparams['V'], h) + T.dot(tparams['W'], ctx)
+        y_next = T.nnet.softmax(u)
+
+    elif x.ndim == 2:
+        mb_size = x.shape[0]
+        y_emb = tparams['Yemb'][y[:, (y_pos - C):y_pos].flatten(), :]
+        y_emb = y_emb.flatten().reshape((C * wv_size, mb_size))
+        # each column for a training instance
+        h = T.tanh(T.dot(tparams['U'], y_emb) + tparams['b'])
+        # each row for a training instance
+        ctx = encoder(x, y, x_mask, y_pos, params, tparams)
+
+        # each column for a training instance
+        u = T.dot(tparams['V'], h) + T.dot(tparams['W'], ctx.T)
+        # softmax works row-wise
+        y_next = T.nnet.softmax(u.T)
+
+    return y_next
+
+def conditional_score(x, y, x_mask, y_pos, params, tparams):
     ''' Return conditional score of the (j+1)-th word index of the summary i.e. y[j]
 
     '''
-    dist = conditional_distribution(x, y, text_length, j,
-                                    params, tparams)
-    return dist[y[j]]
+    dist = conditional_distribution(x, y, x_mask, y_pos, params, tparams)
+    if x.ndim == 1:
+        return dist[y[y_pos]]
+    elif x.ndim == 2:
+        return dist[T.arange(x.shape[0]), y[:, y_pos]]
 
 def tfunc_best_candidate_tokens(params, tparams):
     x = T.cast(T.vector(dtype=theano.config.floatX), 'int32')

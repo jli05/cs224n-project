@@ -15,6 +15,7 @@ from optimisers import adam, adadelta, rmsprop, sgd
 from embeddings import gloveDocumentParser
 from sklearn.cross_validation import train_test_split
 
+EPSILON_FOR_LOG = 1e-8
 
 def get_encoder(model):
     def baseline_encoder(x, y, x_mask, y_pos, params, tparams):
@@ -121,82 +122,87 @@ def conditional_score(x, y, x_mask, y_pos, params, tparams):
     elif x.ndim == 2:
         return dist[T.arange(x.shape[0]), y[:, y_pos]]
 
-def tfunc_best_candidate_tokens(params, tparams):
-    x = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
-    x_length = T.cast(T.scalar(dtype=theano.config.floatX), 'int32')
-    y = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
-    y_length = T.cast(T.scalar(dtype=theano.config.floatX), 'int32')
+def training_model_tensors(x, y, x_mask, y_mask, params, tparams, y_embedder):
+    ''' Return tensors for training model
+
+    '''
+    mb_size = params['minibatch_size']
+    C = params['summary_context_length']
+    l = params['summary_maxlen']
     
-    dist = conditional_distribution(x, y, x_length, y_length, params, tparams)
+    # pad y
+    id_pad = y_embedder.word_to_id[y_embedder.pad]
+    y_padded = T.concatenate([T.alloc(id_pad, (mb_size, C)), y], axis=1)
+
+    # compute the model probabilities for each encoded token in y
+    fn = lambda y_pos, x, y, x_mask: conditional_score(x, y, x_mask, y_pos, params, tparams)
+    y_pos_range = T.arange(C, l + C, dtype='int32')
+
+    prob_, _ = theano.scan(fn,
+                           sequences=[y_pos_range],
+                           outputs_info=None,
+                           non_sequences=[x, y_padded, x_mask],
+                           n_steps=l)
+    prob = T.concatenate([v.reshape((mb_size, 1)) for v in prob_], axis=1)
+
+    # masked negative log-likelihood
+    nll_per_token = - T.log(prob + EPSILON_FOR_LOG) * y_mask
+    nll_per_text = T.sum(nll_per_token, axis=1) / T.sum(y_mask, axis=1) 
+    return nll_per_text
+
+def tfunc_best_candidate_tokens(params, tparams):
+    ''' Returns a Theano function that computes the best k candidate terms for the next position in the summary
+
+    '''
     k = params['summary_search_beam_size']
+
+    x = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
+    x_mask = T.cast(T.scalar(dtype=theano.config.floatX), 'int32')
+    y = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
+    y_pos = T.cast(T.scalar(dtype=theano.config.floatX), 'int32')
+    
+    dist = conditional_distribution(x, y, x_mask, y_pos, params, tparams)
     best_candidate_ids = dist.argsort()[-k:] 
-    f = theano.function([x, y, x_length, y_length],
+    f = theano.function([x, y, x_mask, y_pos],
                         [best_candidate_ids, dist[best_candidate_ids]])
     return f
 
-def summarize(x, text_length, f_best_candidates, params, tparams, embedding_y):
-    ''' Generate summary for a single piece of text
+def summarize(x, x_mask, f_best_candidates, params, tparams, y_embedder):
+    ''' Generate summary for a single text using beam search
 
-    Uses beam search for size k
+    Parameters
+    -----------
+    x : numpy vector (not Theano variable) 
+        encoded single text to summarize
+    x_mask : numpy vector (not Theano variable)
+             mask vector for the text
     '''
-    id_pad = embedding_y.word_to_id[embedding_y.pad]
     C = params['summary_context_length']
-    y = [id_pad] * C
+    k = params['summary_search_beam_size']
+    id_pad = y_embedder.word_to_id[y_embedder.pad]
+
+    # initialise the summary and the beams for search
+    y = [y_embedder.word_to_id[y_embedder.pad]] * C
     beams = [(0.0, y)]
 
-    k = params['summary_search_beam_size']
     for j in range(params['summary_maxlen']):
+        # for each (score, y) in the current beam, expand with the 
+        # k best candidates for the next position in the summary
         new_beams = []
         for (base_score, y) in beams:
-            candidate_ids, candidate_prob = f_best_candidates(x, y, text_length, len(y)) 
-            for (token_id, token_prob) in zip(candidate_ids, candidate_prob):
-                heapq.heappush(new_beams, (base_score - np.log(token_prob), y + [token_id]))
+            token_ids, token_probs = f_best_candidates(x, y, x_mask, len(y)) 
+            for (token_id, token_prob) in zip(token_ids, token_probs):
+                # add a small constant before taking log to increase 
+                # numerical stability
+                new_score = base_score - np.log(EPSILON_FOR_LOG + token_prob)
+                heapq.heappush(new_beams, (new_score, y + [token_id]))
+
+        # Now we retain the k best summaries after all expansions
+        # for the next position
         beams = heapq.nsmallest(k, new_beams)
 
     (best_nll_score, summary) = heapq.heappop(beams)
     return summary[C:]
-
-
-def training_model_tensors(params, tparams):
-    ''' Return tensors for training model
-
-    '''
-    # word/sentence indices for full original text
-    # could be word-by-word, sentence-by-sentence, etc
-    # size batchsize-by-max_l
-    # max_l is the max number of language units (word, sentence, paragraph) of a text
-    x = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
-    x_lengths = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
-
-    # word indices for the summaries
-    # size batchsize-by-max_m
-    # max_m is the max number of words in the summary
-    y = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
-    y_lengths = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
-    #y_lengths = T.ivector()
-
-    # predicted probs
-    # size batchsize-by-(num-contexts in the summary)
-    prob = T.zeros_like(y)
-    prob_mask = T.zeros_like(y)
-    C = params['summary_context_length']
-
-    fn = lambda j, x, y, x_len: conditional_score(x, y, x_len, j, params, tparams)
-    for i in range(params['minibatch_size']):
-        range_ = T.arange(C, y_lengths[i], dtype='int32')
-
-        prob_mask = T.set_subtensor(prob_mask[i, range_], 1)
-        
-        prob_, _ = theano.scan(fn,
-                               sequences=[range_],
-                               outputs_info=None,
-                               non_sequences=[x[i, :], y[i, :], x_lengths[i]],
-                               n_steps=y_lengths[i] - C)
-                            
-        prob = T.set_subtensor(prob[i, range_], prob_.flatten())
-
-    nll = - T.log(prob + 1e-16) * prob_mask    
-    return x, y, x_lengths, y_lengths, nll
 
 def load_params_(params, tparams, file_path):
     pass
@@ -329,61 +335,63 @@ def load_corpus(params, tparams, embedding_x, embedding_y):
 
 def train(model='baseline',
           corpus=None,
+          # optimiser
           optimizer='adam',
           learning_rate=0.001,
-          # training params
-          summary_context_length=10,
-          l2_penalty_coeff=0.0,
-          minibatch_size=20,
-          epochs=float('inf'),
-          train_split=0.75,
-          seed=None,
-          dropout_rate=None,
+          # model params
           embed_full_text_by='word',
+          seq_maxlen=500,
+          summary_maxlen=500,
+          summary_context_length=10,
           internal_representation_dim=1000,
           attention_weight_max_roll=5,
+          # training params
+          l2_penalty_coeff=0.0,
+          train_split=0.75,
+          epochs=float('inf'),
+          minibatch_size=20,
+          seed=None,
+          dropout_rate=None,
           # model load/save
-          load_params=None,
           save_params='ass_params.npy',
           save_params_every=5,
           validate_every=5,
           # summary generation on the validation set
           generate_summary=False,
-          summary_maxlen=500,
           summary_search_beam_size=2):
-    if load_params is not None:
-        params, tparams, embedding_x, embedding_y = load_params_(load_params)
-        params.update({'corpus': corpus,
-                       'epochs': epochs,
-                       'train_split': train_split,
-                       'generate_summary': generate_summary,
-                       'summary_maxlen': summary_maxlen,
-                       'summary_search_beam_size': summary_search_beam_size})
-    else:
-        params, tparams, embedding_x, embedding_y = init_params(
-            model,
-            corpus,
-            optimizer,
-            learning_rate,
-            summary_context_length,
-            l2_penalty_coeff,
-            minibatch_size,
-            epochs,
-            train_split,
-            seed,
-            dropout_rate,
-            embed_full_text_by,
-            internal_representation_dim,
-            attention_weight_max_roll,
-            generate_summary,
-            summary_maxlen,
-            summary_search_beam_size,
-            save_params_every,
-            validate_every
-            )
+    params, tparams, x_embedder, y_embedder = init_params(
+        model=model,
+        corpus=corpus,
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        embed_full_text_by=embed_full_text_by,
+        seq_maxlen=seq_maxlen,
+        summary_maxlen=summary_maxlen,
+        summary_context_length=summary_context_length,
+        internal_representation_dim=internal_representation_dim,
+        attention_weight_max_roll=attention_weight_max_roll,
+        l2_penalty_coeff=l2_penalty_coeff,
+        train_split=train_split,
+        epochs=epochs,
+        minibatch_size=minibatch_size,
+        seed=seed,
+        dropout_rate=dropout_rate,
+        summary_search_beam_size=summary_search_beam_size
+        )
 
-    x, y, x_lengths, y_lengths, nll = training_model_tensors(params, tparams) 
-    cost = nll.sum(axis=1).mean()
+    # minibatch of encoded texts
+    # size batchsize-by-seq_maxlen
+    x = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
+    x_mask = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
+
+    # summaries for the minibatch of texts
+    y = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
+    y_mask = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
+
+    nll = training_model_tensors(x, y, x_mask, y_mask, 
+            params, tparams, y_embedder)
+    cost = nll.mean()
+
     tparams_to_optimise = {key: tparams[key] for key in tparams
                            if not key.endswith('emb')}
     cost += params['l2_penalty_coeff'] * sum([(p ** 2).sum()

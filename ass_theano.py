@@ -8,6 +8,7 @@ import glob
 import json
 import heapq
 import numpy as np
+from random import sample
 import theano
 import theano.tensor as T
 from theano.tensor.shared_randomstreams import RandomStreams
@@ -28,7 +29,7 @@ def get_encoder(model):
         elif x.ndim == 2:
             mb_size = x.shape[0]
         seq_len = params['seq_maxlen']
-        wv_size = params['word_vector_size']
+        wv_size = params['full_text_word_vector_size']
         
         x_emb = tparams['Xemb'][x.flatten(), :]
         x_emb_masked = T.batched_dot(x_emb, x_mask.flatten())
@@ -86,7 +87,7 @@ def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
     '''
     encoder = get_encoder(params['model'])
     C = params['summary_context_length']
-    wv_size = params['word_vector_size']
+    wv_size = params['summary_word_vector_size']
 
     if x.ndim == 1:
         y_emb = tparams['Yemb'][y[(y_pos - C):y_pos].flatten(), :].flatten()
@@ -122,7 +123,7 @@ def conditional_score(x, y, x_mask, y_pos, params, tparams):
     elif x.ndim == 2:
         return dist[T.arange(x.shape[0]), y[:, y_pos]]
 
-def training_model_tensors(x, y, x_mask, y_mask, params, tparams, y_embedder):
+def training_model_output(x, y, x_mask, y_mask, params, tparams, y_embedder):
     ''' Return tensors for training model
 
     '''
@@ -210,93 +211,70 @@ def load_params_(params, tparams, file_path):
 def save_params_(params, tparams, file_path):
     pass
 
-def init_shared_tparam_(name, shape, value=None,
-                        borrow=True, dtype=theano.config.floatX):
-    if value is None:
-        value=np.random.uniform(low=-0.02, high=0.02, size=shape)
-    return theano.shared(value=value.astype(dtype), 
-                         name=name,
-                         borrow=borrow)
+def init_params(**kwargs):
+    def init_shared_tparam_(name, shape, value=None,
+                            borrow=True, dtype=theano.config.floatX):
+        if value is None:
+            value=np.random.uniform(low=-0.02, high=0.02, size=shape)
+        return theano.shared(value=value.astype(dtype), 
+                             name=name,
+                             borrow=borrow)
 
-def init_params(model,
-                corpus,
-                optimizer,
-                learning_rate,
-                summary_context_length,
-                l2_penalty_coeff,
-                minibatch_size,
-                epochs,
-                train_split,
-                seed,
-                dropout_rate,
-                embed_full_text_by,
-                internal_representation_dim,
-                attention_weight_max_roll,
-                generate_summary,
-                summary_maxlen,
-                summary_search_beam_size,
-                save_params_every,
-                validate_every):    
-    params = {'model': model,
-              'corpus': corpus,
-              'optimizer': optimizer,
-              'learning_rate': learning_rate,
-              'summary_context_length': summary_context_length,
-              'l2_penalty_coeff': l2_penalty_coeff,
-              'minibatch_size': minibatch_size,
-              'epochs': epochs,
-              'train_split': train_split,
-              'seed': seed,
-              'dropout_rate': dropout_rate,
-              'embed_full_text_by': embed_full_text_by,
-              'internal_representation_dim': internal_representation_dim,
-              'attention_weight_max_roll': attention_weight_max_roll,
-              'generate_summary': generate_summary,
-              'summary_maxlen': summary_maxlen,
-              'summary_search_beam_size': summary_search_beam_size,
-              'save_params_every': save_params_every,
-              'validate_every': validate_every}
-    params.update({'rng': np.random.RandomState(seed=seed),
-                   'trng': RandomStreams(seed=seed)}) 
+    params = kwargs.copy()
+    params.update({'rng': np.random.RandomState(seed=params['seed']),
+                   'trng': RandomStreams(seed=params['seed'])}) 
     
     if embed_full_text_by == 'word':
-        embedding_x = gloveDocumentParser('glove/glove.25k.300d.txt')
-        embedding_y = embedding_x
+        x_embedder = gloveDocumentParser('glove/glove.25k.300d.txt')
+        y_embedder = x_embedder 
     else:
-        embedding_x = None
-        embedding_y = None
+        x_embedder = None
+        y_embedder = None
+    params.update({'full_text_word_vector_size': x_embedder.token_dim,
+                   'summary_word_vector_size': y_embedder.token_dim})
+
+    h = params['internal_representation_dim']
+    C = params['summary_context_length']
+    V_x = x_embedder.embedding_n_tokens
+    V_y = y_embedder.embedding_n_tokens
+    d_x = x_embedder.token_dim    # full text word vector size
+    d_y = y_embedder.token_dim    # summary word vector size
 
     tparams = {
-        'U': init_shared_tparam_('U', 
-                                 (internal_representation_dim, summary_context_length * embedding_y.token_dim)),
-        'b': init_shared_tparam_('b',
-                                 (internal_representation_dim,)),
-        'V': init_shared_tparam_('V', 
-                                 (embedding_y.embedding_n_tokens, internal_representation_dim)),
-        'W': init_shared_tparam_('W', 
-                                 (embedding_y.embedding_n_tokens, embedding_x.token_dim)),
-        'Xemb': init_shared_tparam_('Xemb', embedding_x.word_to_vector_matrix.shape, 
-                                    value=embedding_x.word_to_vector_matrix),
-        'Yemb': init_shared_tparam_('Yemb', embedding_y.word_to_vector_matrix.shape,
-                                    value=embedding_y.word_to_vector_matrix)
+        'U': init_shared_tparam_('U', (h, C * d_y)),
+        'b': init_shared_tparam_('b', (h,)),
+        'V': init_shared_tparam_('V', (V_y, h)), 
+        'W': init_shared_tparam_('W', (V_y, d_x)), 
+        'Xemb': init_shared_tparam_('Xemb', (V_x, d_x), 
+                                    value=x_embedder.word_to_vector_matrix),
+        'Yemb': init_shared_tparam_('Yemb', (V_y, d_y),
+                                    value=y_embedder.word_to_vector_matrix)
         }
-    if model == 'attention':
-        tparams.update({'attention_P': init_shared_tparam_('attention_P', 
-                                                           (embedding_x.token_dim, summary_context_length * embedding_y.token_dim))})
+    if params['model'] == 'attention':
+        tparams.update({
+            'attention_P': init_shared_tparam_('attention_P', (d_x, C * d_y))
+            })
     
-    return params, tparams, embedding_x, embedding_y
+    return params, tparams, x_embedder, y_embedder
 
-def validate(params, tparams):
-    pass
+def load_corpus(params, tparams, x_embedder, y_embedder):
+    def pad_to_length(v, pad, l):
+        return np.pad(v, (0, l - len(v)), 'constant', 
+                      constant_values=(pad, pad))
 
-def load_corpus(params, tparams, embedding_x, embedding_y):
-    id_pad = embedding_y.word_to_id[embedding_y.pad]
+    def mask_vector(v, l):
+        return [1] * len(v) + [0] * (l - len(v))
+
     C = params['summary_context_length']
+    l_x = params['seq_maxlen']
+    l_y = params['summary_maxlen']
+    id_pad_x = x_embedder.word_to_id[x_embedder.pad]
+    id_pad_y = y_embedder.word_to_id[y_embedder.pad]
 
-    x_vectors = []
-    x_lengths = []
-    y_vectors = []
-    y_lengths = []
+    x_ = []
+    y_ = []
+    x_mask_ = []
+    y_mask_ = []
     for file_path in glob.iglob(os.path.join(params['corpus'], '*.json')):
         try:
             with open(file_path, 'r') as f:
@@ -306,26 +284,24 @@ def load_corpus(params, tparams, embedding_x, embedding_y):
         
             if not len(full_text_vector) or not len(summary_vector):
                 continue
-            x_vectors.append(full_text_vector)
-            y_vectors.append([id_pad] * C + summary_vector)
-            x_lengths.append(len(full_text_vector))
-            y_lengths.append(C + len(summary_vector))
+            
+            x_.append(pad_to_length(full_text_vector[:l_x], id_pad_x, l_x))
+            y_.append(pad_to_length(summary_vector[:l_y], id_pad_y, l_y))
+            x_mask_.append(mask_vector(full_text_vector[:l_x], l_x))
+            y_mask_.append(mask_vector(summary_vector[:l_y], l_y))
         except Exception as e:
             continue
     print('Loaded {:} files'.format(len(x_vectors)))
     
-    x = np.zeros((len(x_vectors), max(x_lengths)), dtype='int32')
-    y = np.zeros((len(y_vectors), max(y_lengths)), dtype='int32')
-    for i in range(len(x_vectors)):
-        x[i, :x_lengths[i]] = x_vectors[i]
-        y[i, :y_lengths[i]] = y_vectors[i]
-    x_lengths = np.array(x_lengths, dtype='int32')
-    y_lengths = np.array(y_lengths, dtype='int32')
+    x = np.array(x_, dtype='int32')
+    y = np.array(y_, dtype='int32')
+    x_mask = np.array(x_mask_, dtype='int32')
+    y_mask = np.array(y_mask_, dtype='int32')
 
     x_train, x_test, y_train, y_test, \
-        x_lengths_train, x_lengths_test, \
-        y_lengths_train, y_lengths_test = \
-        train_test_split(x, y, x_lengths, y_lengths,
+        x_mask_train, x_mask_test, \
+        y_mask_train, y_mask_test = \
+        train_test_split(x, y, x_mask, y_mask,
                          train_size=params['train_split'],
                          random_state=params['rng'])
     
@@ -356,6 +332,7 @@ def train(model='baseline',
           save_params='ass_params.npy',
           save_params_every=5,
           validate_every=5,
+          print_every=5,
           # summary generation on the validation set
           generate_summary=False,
           summary_search_beam_size=2):
@@ -388,7 +365,7 @@ def train(model='baseline',
     y = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
     y_mask = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
 
-    nll = training_model_tensors(x, y, x_mask, y_mask, 
+    nll = training_model_output(x, y, x_mask, y_mask, 
             params, tparams, y_embedder)
     cost = nll.mean()
 
@@ -396,85 +373,101 @@ def train(model='baseline',
                            if not key.endswith('emb')}
     cost += params['l2_penalty_coeff'] * sum([(p ** 2).sum()
                                               for k, p in tparams_to_optimise.items()])
-    inputs = [x, y, x_lengths, y_lengths]
+    inputs = [x, y, x_mask, y_mask]
     
-
-    #trng, use_noise, \
-    #    x, x_mask, y, y_mask, \
-    #    opt_ret, \
-    #    cost = \
-    #    build_model(params, tparams, options)
-
-
-        # after all regularizers - compile the computational graph for cost
-    print('Building f_cost...')
+    # after all regularizers - compile the computational graph for cost
+    print('Building f_cost... ', end='')
     f_cost = theano.function(inputs, cost)
     print('Done')
 
-    print('Computing gradient...')
+    print('Computing gradient... ', end='')
     grads = T.grad(cost, list(tparams_to_optimise.values()))
     print('Done')
 
     # compile the optimizer, the actual computational graph is compiled here
     lr = T.scalar(name='lr')
-    print('Building optimizers...')
+    print('Building optimizers... ', end='')
     f_grad_shared, f_update = eval(optimizer)(lr, tparams_to_optimise, grads, inputs, cost)
     print('Done')
 
-    print('Building summary candidate token generator...')
+    print('Building summary candidate token generator... ', end='')
     f_best_candidates = tfunc_best_candidate_tokens(params, tparams)
     print('Done')
 
-    print('Loading corpus...')
+    print('Loading corpus... ', end='')
     x_train, x_test, y_train, y_test, \
-        x_lengths_train, x_lengths_test, \
-        y_lengths_train, y_lengths_test \
-        = load_corpus(params, tparams, embedding_x, embedding_y)
+        x_mask_train, x_mask_test, \
+        y_mask_train, y_mask_test \
+        = load_corpus(params, tparams, x_embedder, y_embedder)
     n_train_batches = int(x_train.shape[0] / params['minibatch_size'])
     n_test_batches = int(x_test.shape[0] / params['minibatch_size'])
     print('Done')
 
     print('Optimization')
+    test_ids_to_summarize = sample(range(x_test.shape[0]), 5) 
     for epoch in range(epochs):
         print('Epoch', epoch)
 
+        # training of all minibatches
         params['phase'] = 'training'
+        training_costs = []
         for batch_id in range(n_train_batches):
-            print('Batch', batch_id)
-            #use_noise.set_value(1.)
-            
+            if batch_id % print_every == 0:
+                print('Batch {:} '.format(batch_id), end='')
             # compute cost, grads and copy grads to shared variables
+            #use_noise.set_value(1.)
             current_batch = range(batch_id * params['minibatch_size'],
                                   (batch_id + 1) * params['minibatch_size'])
-            cost = f_grad_shared(x_train[current_batch, :], y_train[current_batch, :], 
-                                 x_lengths_train[current_batch], y_lengths_train[current_batch])
-            print('cost', cost)
-
+            cost = f_grad_shared(x_train[current_batch, :], 
+                                 y_train[current_batch, :], 
+                                 x_mask_train[current_batch, :], 
+                                 y_mask_train[current_batch, :])
+            training_costs.append(cost)
             # do the update on parameters
             f_update(learning_rate)
+            if batch_id % print_every == 0:
+                print('Cost {:.4f}'.format(cost))
+        print('Epoch {:} mean training cost {:.4f}'.format(
+            epoch, np.mean(training_costs)
+            ))
 
-            #summary_token_ids = generate_summary(x_test[0, :], x_lengths_test[0], 
-            #                                     f_best_candidates, params, tparams, 
-            #                                     embedding_y)
-            #print(embedding_y.documentFromVector(summary_token_ids))
-        
         # save the params
         if epoch % params['save_params_every'] == 0:
-            print('Saving...')
+            print('Saving... ', end='')
             save_params_(params, tparams, save_params)
             print('Done')
 
-        # validating
+        # validate
         # compute the metrics and generate summaries (if requested)
         params['phase'] = 'test'
         if epoch % params['validate_every'] == 0:
-            validate(params, tparams)
+            print('Validating')
+            validate_costs = []
+            for batch_id in range(n_test_batches):
+                if batch_id % print_every == 0:
+                    print('Batch {:} '.format(batch_id), end='')
+                current_batch = range(batch_id * params['minibatch_size'],
+                                      (batch_id + 1) * params['minibatch_size'])
+                validate_cost = f_cost(x_test[current_batch, :], 
+                                       y_test[current_batch, :], 
+                                       x_mask_test[current_batch, :], 
+                                       y_mask_test[current_batch, :])
+                validate_costs.append(validate_cost)
+                if batch_id % print_every == 0:
+                    print('Validation cost {:.4f}'.format(validate_cost))
+            print('Epoch {:} mean validation cost {:.4f}'.format(
+                  epoch, np.mean(validate_costs)
+                  ))
 
-            for i in range(5):
-                summary_token_ids = summarize(x_test[i, :], x_lengths_test[i], 
-                                              f_best_candidates, params, tparams, 
-                                              embedding_y)
-                print(embedding_y.documentFromVector(summary_token_ids))
-                print(embedding_y.documentFromVector(y_test[i, :])[:20])
+            if generate_summary:
+                print('Generating summary')
+                for i in test_ids_to_summarize:
+                    summary_token_ids = summarize(
+                        x_test[i, :], x_mask_test[i, :], 
+                        f_best_candidates, 
+                        params, tparams,
+                        y_embedder)
+                    print('Sample :', y_embedder.documentFromVector(summary_token_ids))
+                    print('Truth :', y_embedder.documentFromVector(y_test[i, :])[:20])
 
 

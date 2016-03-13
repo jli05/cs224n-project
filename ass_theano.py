@@ -384,7 +384,7 @@ def train(context_encoder='baseline',
     
     # after all regularizers - compile the computational graph for cost
     print('Building f_cost... ', end='')
-    f_cost = theano.function(inputs, cost)
+    f_cost = theano.function(inputs, cost, allow_input_downcast=True)
     print('Done')
 
     print('Computing gradient... ', end='')
@@ -440,7 +440,7 @@ def train(context_encoder='baseline',
             ))
 
         # save the params
-        if epoch % params['save_params_every'] == 0:
+        if epoch % save_params_every == 0:
             print('Saving... ', end='')
             save_params_(params, tparams, save_params)
             print('Done')
@@ -448,7 +448,7 @@ def train(context_encoder='baseline',
         # validate
         # compute the metrics and generate summaries (if requested)
         params['phase'] = 'test'
-        if epoch % params['validate_every'] == 0:
+        if epoch % validate_every == 0:
             print('Validating')
             validate_costs = []
             for batch_id in range(n_test_batches):

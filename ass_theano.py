@@ -43,7 +43,7 @@ def get_encoder(context_encoder):
                 1 / x_mask.sum(axis=1)
             )
          
-        return ctx 
+        return T.cast(ctx, theano.config.floatX) 
 
     def attention_encoder(x, y, x_mask, y_pos, params, tparams):
         ''' attention-based context encoder given one piece of text
@@ -152,7 +152,7 @@ def training_model_output(x, y, x_mask, y_mask, params, tparams, y_embedder):
     # masked negative log-likelihood
     nll_per_token = - T.log(prob + EPSILON_FOR_LOG) * y_mask
     nll_per_text = T.sum(nll_per_token, axis=1) / T.sum(y_mask, axis=1) 
-    return nll_per_text
+    return T.cast(nll_per_text, theano.config.floatX)
 
 def tfunc_best_candidate_tokens(params, tparams):
     ''' Returns a Theano function that computes the best k candidate terms for the next position in the summary

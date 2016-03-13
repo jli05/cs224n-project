@@ -11,7 +11,7 @@ def global_params():
     params = {
             'minibatch_size': 2,
             'seq_maxlen': 2,
-            'word_vector_size': 2
+            'full_text_word_vector_size': 2
             }
     tparams = {
             'Xemb': theano.shared(

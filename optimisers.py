@@ -14,7 +14,7 @@ def adam(lr, tparams, grads, inp, cost):
                for k, p in tparams.items()]
     gsup = [(gs, g) for gs, g in zip(gshared, grads)]
 
-    f_grad_shared = theano.function(inp, cost, updates=gsup, profile=profile, allow_input_downcast=True)
+    f_grad_shared = theano.function(inp, cost, updates=gsup, profile=profile)
 
     lr0 = 0.0002
     b1 = 0.1
@@ -42,7 +42,7 @@ def adam(lr, tparams, grads, inp, cost):
     updates.append((i, i_t))
 
     f_update = theano.function([lr], [], updates=updates,
-                               on_unused_input='ignore', profile=profile, allow_input_downcast=True)
+                               on_unused_input='ignore', profile=profile)
 
     return f_grad_shared, f_update
 
@@ -63,7 +63,7 @@ def adadelta(lr, tparams, grads, inp, cost):
              for rg2, g in zip(running_grads2, grads)]
 
     f_grad_shared = theano.function(inp, cost, updates=zgup+rg2up,
-                                    profile=profile, allow_input_downcast=True)
+                                    profile=profile)
 
     updir = [-tensor.sqrt(ru2 + 1e-6) / tensor.sqrt(rg2 + 1e-6) * zg
              for zg, ru2, rg2 in
@@ -73,7 +73,7 @@ def adadelta(lr, tparams, grads, inp, cost):
     param_up = [(p, p + ud) for p, ud in zip(itemlist(tparams), updir)]
 
     f_update = theano.function([lr], [], updates=ru2up+param_up,
-                               on_unused_input='ignore', profile=profile, allow_input_downcast=True)
+                               on_unused_input='ignore', profile=profile)
 
     return f_grad_shared, f_update
 
@@ -95,7 +95,7 @@ def rmsprop(lr, tparams, grads, inp, cost):
              for rg2, g in zip(running_grads2, grads)]
 
     f_grad_shared = theano.function(inp, cost, updates=zgup+rgup+rg2up,
-                                    profile=profile, allow_input_downcast=True)
+                                    profile=profile)
 
     updir = [theano.shared(p.get_value() * numpy.float32(0.),
                            name='%s_updir' % k)
@@ -106,7 +106,7 @@ def rmsprop(lr, tparams, grads, inp, cost):
     param_up = [(p, p + udn[1])
                 for p, udn in zip(itemlist(tparams), updir_new)]
     f_update = theano.function([lr], [], updates=updir_new+param_up,
-                               on_unused_input='ignore', profile=profile, allow_input_downcast=True)
+                               on_unused_input='ignore', profile=profile)
 
     return f_grad_shared, f_update
 
@@ -117,9 +117,9 @@ def sgd(lr, tparams, grads, x, mask, y, cost):
     gsup = [(gs, g) for gs, g in zip(gshared, grads)]
 
     f_grad_shared = theano.function([x, mask, y], cost, updates=gsup,
-                                    profile=profile, allow_input_downcast=True)
+                                    profile=profile)
 
     pup = [(p, p - lr * g) for p, g in zip(itemlist(tparams), gshared)]
-    f_update = theano.function([lr], [], updates=pup, profile=profile, allow_input_downcast=True)
+    f_update = theano.function([lr], [], updates=pup, profile=profile)
 
     return f_grad_shared, f_update

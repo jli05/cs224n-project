@@ -3,4 +3,4 @@
 *.swp
 .cache/
 __pycache__/
-
+glove/

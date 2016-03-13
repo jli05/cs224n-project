@@ -6,6 +6,7 @@ import sys
 import os
 import glob
 import json
+import pickle
 import heapq
 import numpy as np
 from random import sample
@@ -18,7 +19,7 @@ from sklearn.cross_validation import train_test_split
 
 EPSILON_FOR_LOG = 1e-8
 
-def get_encoder(model):
+def get_encoder(context_encoder):
     def baseline_encoder(x, y, x_mask, y_pos, params, tparams):
         ''' baseline context encoder given one piece of text
 
@@ -62,11 +63,12 @@ def get_encoder(model):
         return sum([T.dot(T.roll(p, q), x_embedding)
                     for q in range(- Q, Q + 1)]).flatten()
 
-    if model == 'baseline':
-        encoder = baseline_encoder
-    elif model == 'attention':
-        encoder = attention_encoder
-    return encoder
+    if context_encoder == 'baseline':
+        return baseline_encoder
+    elif context_encoder == 'attention':
+        return  attention_encoder
+    else:
+        raise ValueError('Invalide context encoder {:}'.format(context_encoder))
 
 def dropout_layer(state_before, params, tparams):
     trng = params['trng']
@@ -85,14 +87,14 @@ def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
 
     Given the input text tensor and summary tensor, returns the distribution for the next summary word index
     '''
-    encoder = get_encoder(params['model'])
+    enc = get_encoder(params['context_encoder'])
     C = params['summary_context_length']
     wv_size = params['summary_word_vector_size']
 
     if x.ndim == 1:
         y_emb = tparams['Yemb'][y[(y_pos - C):y_pos].flatten(), :].flatten()
         h = T.tanh(T.dot(tparams['U'], y_emb) + tparams['b'])
-        ctx = encoder(x, y, x_mask, y_pos, params, tparams)
+        ctx = enc(x, y, x_mask, y_pos, params, tparams)
 
         u = T.dot(tparams['V'], h) + T.dot(tparams['W'], ctx)
         y_next = T.nnet.softmax(u)
@@ -101,13 +103,14 @@ def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
         mb_size = x.shape[0]
         y_emb = tparams['Yemb'][y[:, (y_pos - C):y_pos].flatten(), :]
         y_emb = y_emb.flatten().reshape((C * wv_size, mb_size))
-        # each column for a training instance
-        h = T.tanh(T.dot(tparams['U'], y_emb) + tparams['b'])
         # each row for a training instance
-        ctx = encoder(x, y, x_mask, y_pos, params, tparams)
+        # (in order to broadcast the vector b along the row axis)
+        h = T.tanh((T.dot(tparams['U'], y_emb)).T + tparams['b'])
+        # each row for a training instance
+        ctx = enc(x, y, x_mask, y_pos, params, tparams)
 
         # each column for a training instance
-        u = T.dot(tparams['V'], h) + T.dot(tparams['W'], ctx.T)
+        u = T.dot(tparams['V'], h.T) + T.dot(tparams['W'], ctx.T)
         # softmax works row-wise
         y_next = T.nnet.softmax(u.T)
 
@@ -133,18 +136,18 @@ def training_model_output(x, y, x_mask, y_mask, params, tparams, y_embedder):
     
     # pad y
     id_pad = y_embedder.word_to_id[y_embedder.pad]
-    y_padded = T.concatenate([T.alloc(id_pad, (mb_size, C)), y], axis=1)
+    y_padded = T.concatenate([T.alloc(id_pad, mb_size, C), y], axis=1)
 
     # compute the model probabilities for each encoded token in y
     fn = lambda y_pos, x, y, x_mask: conditional_score(x, y, x_mask, y_pos, params, tparams)
     y_pos_range = T.arange(C, l + C, dtype='int32')
 
     prob_, _ = theano.scan(fn,
-                           sequences=[y_pos_range],
-                           outputs_info=None,
+                           sequences=y_pos_range,
                            non_sequences=[x, y_padded, x_mask],
                            n_steps=l)
-    prob = T.concatenate([v.reshape((mb_size, 1)) for v in prob_], axis=1)
+    #prob = T.concatenate([v.reshape((mb_size, 2)) for v in prob_], axis=1)
+    prob = prob_.T
 
     # masked negative log-likelihood
     nll_per_token = - T.log(prob + EPSILON_FOR_LOG) * y_mask
@@ -206,10 +209,14 @@ def summarize(x, x_mask, f_best_candidates, params, tparams, y_embedder):
     return summary[C:]
 
 def load_params_(params, tparams, file_path):
-    pass
+    with open(file_path, 'rb') as f:
+        params = pickle.load(f)
+        tparams = pickle.load(f)
 
 def save_params_(params, tparams, file_path):
-    pass
+    with open(file_path, 'wb') as f:
+        pickle.dump(params, f)
+        pickle.dump(tparams, f)
 
 def init_params(**kwargs):
     def init_shared_tparam_(name, shape, value=None,
@@ -224,8 +231,8 @@ def init_params(**kwargs):
     params.update({'rng': np.random.RandomState(seed=params['seed']),
                    'trng': RandomStreams(seed=params['seed'])}) 
     
-    if embed_full_text_by == 'word':
-        x_embedder = gloveDocumentParser('glove/glove.25k.300d.txt')
+    if params['embed_full_text_by'] == 'word':
+        x_embedder = gloveDocumentParser('glove/glove.10k.300d.txt')
         y_embedder = x_embedder 
     else:
         x_embedder = None
@@ -250,7 +257,7 @@ def init_params(**kwargs):
         'Yemb': init_shared_tparam_('Yemb', (V_y, d_y),
                                     value=y_embedder.word_to_vector_matrix)
         }
-    if params['model'] == 'attention':
+    if params['context_encoder'] == 'attention':
         tparams.update({
             'attention_P': init_shared_tparam_('attention_P', (d_x, C * d_y))
             })
@@ -279,8 +286,8 @@ def load_corpus(params, tparams, x_embedder, y_embedder):
         try:
             with open(file_path, 'r') as f:
                 document = json.load(f)
-            full_text_vector = embedding_x.parseDocument(document['full_text'])
-            summary_vector = embedding_y.parseDocument(document['summary'])
+            full_text_vector = x_embedder.parseDocument(document['full_text'])
+            summary_vector = y_embedder.parseDocument(document['summary'])
         
             if not len(full_text_vector) or not len(summary_vector):
                 continue
@@ -291,12 +298,12 @@ def load_corpus(params, tparams, x_embedder, y_embedder):
             y_mask_.append(mask_vector(summary_vector[:l_y], l_y))
         except Exception as e:
             continue
-    print('Loaded {:} files'.format(len(x_vectors)))
+    print('Loaded {:} files'.format(len(x_)))
     
     x = np.array(x_, dtype='int32')
     y = np.array(y_, dtype='int32')
-    x_mask = np.array(x_mask_, dtype='int32')
-    y_mask = np.array(y_mask_, dtype='int32')
+    x_mask = np.array(x_mask_)
+    y_mask = np.array(y_mask_)
 
     x_train, x_test, y_train, y_test, \
         x_mask_train, x_mask_test, \
@@ -306,10 +313,10 @@ def load_corpus(params, tparams, x_embedder, y_embedder):
                          random_state=params['rng'])
     
     return x_train, x_test, y_train, y_test, \
-        x_lengths_train, x_lengths_test, \
-        y_lengths_train, y_lengths_test
+        x_mask_train, x_mask_test, \
+        y_mask_train, y_mask_test
 
-def train(model='baseline',
+def train(context_encoder='baseline',
           corpus=None,
           # optimiser
           optimizer='adam',
@@ -317,9 +324,9 @@ def train(model='baseline',
           # model params
           embed_full_text_by='word',
           seq_maxlen=500,
-          summary_maxlen=500,
+          summary_maxlen=200,
           summary_context_length=10,
-          internal_representation_dim=1000,
+          internal_representation_dim=2000,
           attention_weight_max_roll=5,
           # training params
           l2_penalty_coeff=0.0,
@@ -329,7 +336,7 @@ def train(model='baseline',
           seed=None,
           dropout_rate=None,
           # model load/save
-          save_params='ass_params.npy',
+          save_params='ass_params.pkl',
           save_params_every=5,
           validate_every=5,
           print_every=5,
@@ -337,7 +344,7 @@ def train(model='baseline',
           generate_summary=False,
           summary_search_beam_size=2):
     params, tparams, x_embedder, y_embedder = init_params(
-        model=model,
+        context_encoder=context_encoder,
         corpus=corpus,
         optimizer=optimizer,
         learning_rate=learning_rate,
@@ -359,11 +366,11 @@ def train(model='baseline',
     # minibatch of encoded texts
     # size batchsize-by-seq_maxlen
     x = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
-    x_mask = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
+    x_mask = T.matrix(dtype=theano.config.floatX)
 
     # summaries for the minibatch of texts
     y = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
-    y_mask = T.cast(T.matrix(dtype=theano.config.floatX), 'int32')
+    y_mask = T.matrix(dtype=theano.config.floatX)
 
     nll = training_model_output(x, y, x_mask, y_mask, 
             params, tparams, y_embedder)
@@ -422,6 +429,7 @@ def train(model='baseline',
                                  y_train[current_batch, :], 
                                  x_mask_train[current_batch, :], 
                                  y_mask_train[current_batch, :])
+            cost = np.asscalar(cost)
             training_costs.append(cost)
             # do the update on parameters
             f_update(learning_rate)
@@ -452,6 +460,7 @@ def train(model='baseline',
                                        y_test[current_batch, :], 
                                        x_mask_test[current_batch, :], 
                                        y_mask_test[current_batch, :])
+                validate_cost = np.asscalar(validate_cost)
                 validate_costs.append(validate_cost)
                 if batch_id % print_every == 0:
                     print('Validation cost {:.4f}'.format(validate_cost))

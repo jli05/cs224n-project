@@ -384,7 +384,7 @@ def train(context_encoder='baseline',
     
     # after all regularizers - compile the computational graph for cost
     print('Building f_cost... ', end='')
-    f_cost = theano.function(inputs, cost)
+    f_cost = theano.function(inputs, cost, allow_input_downcast=True)
     print('Done')
 
     print('Computing gradient... ', end='')

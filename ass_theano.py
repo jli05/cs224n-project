@@ -93,7 +93,7 @@ def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
 
     if x.ndim == 1:
         y_emb = tparams['Yemb'][y[(y_pos - C):y_pos].flatten(), :].flatten()
-        h = T.tanh(T.dot(tparams['U'], y_emb) + tparams['b'])
+        h = T.tanh(T.dot(tparams['U'], y_emb) + tparams['b']).flatten()
         ctx = enc(x, y, x_mask, y_pos, params, tparams)
 
         u = T.dot(tparams['V'], h) + T.dot(tparams['W'], ctx)
@@ -161,14 +161,15 @@ def tfunc_best_candidate_tokens(params, tparams):
     k = params['summary_search_beam_size']
 
     x = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
-    x_mask = T.cast(T.scalar(dtype=theano.config.floatX), 'int32')
+    x_mask = T.vector(dtype=theano.config.floatX)
     y = T.cast(T.vector(dtype=theano.config.floatX), 'int32')
     y_pos = T.cast(T.scalar(dtype=theano.config.floatX), 'int32')
     
     dist = conditional_distribution(x, y, x_mask, y_pos, params, tparams)
     best_candidate_ids = dist.argsort()[-k:] 
     f = theano.function([x, y, x_mask, y_pos],
-                        [best_candidate_ids, dist[best_candidate_ids]])
+                        [best_candidate_ids, dist[best_candidate_ids]],
+                        allow_input_downcast=True)
     return f
 
 def summarize(x, x_mask, f_best_candidates, params, tparams, y_embedder):
@@ -472,7 +473,7 @@ def train(context_encoder='baseline',
                 print('Generating summary')
                 for i in test_ids_to_summarize:
                     summary_token_ids = summarize(
-                        x_test[i, :], x_mask_test[i, :], 
+                        x_test[i, :].flatten(), x_mask_test[i, :].flatten(), 
                         f_best_candidates, 
                         params, tparams,
                         y_embedder)

@@ -51,17 +51,35 @@ def get_encoder(context_encoder):
         '''
         C = params['summary_context_length']
         Q = params['attention_weight_max_roll']
-        x_embedding = tparams['Xemb'][x[:text_length], :]
-        y_embedding = tparams['Yemb'][y[(summary_length - C):summary_length], :]
-        p = T.nnet.softmax(
-            T.dot(x_embedding, T.dot(tparams['attention_P'], y_embedding.flatten()))
-        )
-        # we're going to roll p with shift [-Q,Q]
-        # for start and end elements in p the roll is going
-        # to push them to the other end -- we know this is a problem
-        p /= 2 * Q + 1
-        return sum([T.dot(T.roll(p, q), x_embedding)
-                    for q in range(- Q, Q + 1)]).flatten()
+        wv_size_x = params['full_text_word_vector_size']
+        wv_size_y = params['summary_word_vector_size']
+        P = tparams['att_P']
+        m = tparams['att_P_conv']
+
+        if x.ndim == 1:
+            x_emb = tparams['Xemb'][x, :]
+            y_emb = tparams['Yemb'][y[(y_pos - C):y_pos], :]
+            p = T.nnet.softmax(
+                T.dot(x_emb, T.dot(P, y_emb.flatten()))
+            )
+            p_masked = p * x_mask
+            p_masked /= p_masked.sum()
+            ctx = T.dot(x_emb, T.dot(m, p_masked))
+
+        elif x.ndim == 2:
+            x_emb = tparams['Xemb'][x.flatten(), :]
+            x_emb = x_emb.reshape((x.shape[0], x.shape[1], wv_size_x))
+            y_emb = tparams['Yemb'][y[:, (y_pos - C):y_pos].flatten(), :]
+            y_emb = y_emb.flatten().reshape((x.shape[0], C * wv_size_y)).T
+            p = T.nnet.softmax(
+                    T.batched_dot(x_emb, T.dot(P, y_emb).T)
+                    )
+            p_masked = p * x_mask
+            p_masked /= p_masked.sum(axis=1)
+            ctx = T.batched_dot(x_emb, T.dot(m, p_masked.T).T) 
+
+        return T.cast(ctx, theano.config.floatX)
+
 
     if context_encoder == 'baseline':
         return baseline_encoder
@@ -228,6 +246,15 @@ def init_params(**kwargs):
                              name=name,
                              borrow=borrow)
 
+    def attention_prob_conv_matrix(Q, l):
+        assert l >= Q
+        m = np.diagflat([1.0] * l)
+        for i in range(1, Q):
+            m += np.diagflat([1.0] * (l - i), k=i)
+            m += np.diagflat([1.0] * (l - i), k=-i)
+        m = m / np.sum(m, axis=0)
+        return m
+
     params = kwargs.copy()
     params.update({'rng': np.random.RandomState(seed=params['seed']),
                    'trng': RandomStreams(seed=params['seed'])}) 
@@ -243,6 +270,7 @@ def init_params(**kwargs):
 
     h = params['internal_representation_dim']
     C = params['summary_context_length']
+    l = params['seq_maxlen']
     V_x = x_embedder.embedding_n_tokens
     V_y = y_embedder.embedding_n_tokens
     d_x = x_embedder.token_dim    # full text word vector size
@@ -259,8 +287,12 @@ def init_params(**kwargs):
                                     value=y_embedder.word_to_vector_matrix)
         }
     if params['context_encoder'] == 'attention':
+        Q = params['attention_weight_max_roll']
+        m = attention_prob_conv_matrix(Q, l)
         tparams.update({
-            'attention_P': init_shared_tparam_('attention_P', (d_x, C * d_y))
+            'att_P': init_shared_tparam_('att_P', (d_x, C * d_y))
+            'att_P_conv': init_shared_tparam_('att_P_conv', (l, l),
+                                              value=m)
             })
     
     return params, tparams, x_embedder, y_embedder

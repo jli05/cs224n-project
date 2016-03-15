@@ -115,7 +115,7 @@ def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
         ctx = enc(x, y, x_mask, y_pos, params, tparams)
 
         u = T.dot(tparams['V'], h) + T.dot(tparams['W'], ctx)
-        y_next = T.nnet.softmax(u)
+        y_next = T.nnet.softmax(u).flatten()
 
     elif x.ndim == 2:
         mb_size = x.shape[0]
@@ -290,7 +290,7 @@ def init_params(**kwargs):
         Q = params['attention_weight_max_roll']
         m = attention_prob_conv_matrix(Q, l)
         tparams.update({
-            'att_P': init_shared_tparam_('att_P', (d_x, C * d_y))
+            'att_P': init_shared_tparam_('att_P', (d_x, C * d_y)),
             'att_P_conv': init_shared_tparam_('att_P_conv', (l, l),
                                               value=m)
             })

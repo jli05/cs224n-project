@@ -68,8 +68,8 @@ def get_encoder(context_encoder):
                 T.dot(x_emb, T.dot(P, y_emb.flatten()))
             ).flatten()
             p_masked = p * x_mask
-            p_masked /= p_masked.sum()
-            ctx = T.batched_dot(x_emb, T.dot(m, p_masked)).sum(axis=0)
+            p_masked_n = p_masked / p_masked.sum()
+            ctx = T.batched_dot(x_emb, T.dot(m, p_masked_n)).sum(axis=0)
 
         elif x.ndim == 2:
             x_emb = tparams['Xemb'][x.flatten(), :]
@@ -80,9 +80,8 @@ def get_encoder(context_encoder):
                     T.batched_dot(x_emb, T.dot(P, y_emb).T)
                     )
             p_masked = p * x_mask
-            inverse_row_sum_ = (1 / p_masked.sum(axis=1)).flatten()
-            p_masked = T.batched_dot(p_masked, inverse_row_sum_)
-            ctx = T.batched_dot(T.dot(m, p_masked.T).T, x_emb) 
+            p_masked_n = p_masked / p_masked.norm(1, axis=1).reshape((mb_size, 1))
+            ctx = T.batched_dot(T.dot(m, p_masked_n.T).T, x_emb) 
 
         return T.cast(ctx, theano.config.floatX)
 

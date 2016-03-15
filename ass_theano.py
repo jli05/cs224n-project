@@ -49,6 +49,11 @@ def get_encoder(context_encoder):
         ''' attention-based context encoder given one piece of text
 
         '''
+        if x.ndim == 1:
+            mb_size = 1
+        else:
+            mb_size = params['minibatch_size']
+        l = params['seq_maxlen']
         C = params['summary_context_length']
         Q = params['attention_weight_max_roll']
         wv_size_x = params['full_text_word_vector_size']
@@ -61,25 +66,25 @@ def get_encoder(context_encoder):
             y_emb = tparams['Yemb'][y[(y_pos - C):y_pos], :]
             p = T.nnet.softmax(
                 T.dot(x_emb, T.dot(P, y_emb.flatten()))
-            )
+            ).flatten()
             p_masked = p * x_mask
             p_masked /= p_masked.sum()
-            ctx = T.dot(x_emb, T.dot(m, p_masked))
+            ctx = T.batched_dot(x_emb, T.dot(m, p_masked)).sum(axis=0)
 
         elif x.ndim == 2:
             x_emb = tparams['Xemb'][x.flatten(), :]
-            x_emb = x_emb.reshape((x.shape[0], x.shape[1], wv_size_x))
+            x_emb = x_emb.reshape((mb_size, l, wv_size_x))
             y_emb = tparams['Yemb'][y[:, (y_pos - C):y_pos].flatten(), :]
-            y_emb = y_emb.flatten().reshape((x.shape[0], C * wv_size_y)).T
+            y_emb = y_emb.flatten().reshape((mb_size, C * wv_size_y)).T
             p = T.nnet.softmax(
                     T.batched_dot(x_emb, T.dot(P, y_emb).T)
                     )
             p_masked = p * x_mask
-            p_masked /= p_masked.sum(axis=1)
-            ctx = T.batched_dot(x_emb, T.dot(m, p_masked.T).T) 
+            inverse_row_sum_ = (1 / p_masked.sum(axis=1)).flatten()
+            p_masked = T.batched_dot(p_masked, inverse_row_sum_)
+            ctx = T.batched_dot(T.dot(m, p_masked.T).T, x_emb) 
 
         return T.cast(ctx, theano.config.floatX)
-
 
     if context_encoder == 'baseline':
         return baseline_encoder

@@ -415,7 +415,7 @@ def train(context_encoder='baseline',
     cost = nll.mean()
 
     tparams_to_optimise = {key: tparams[key] for key in tparams
-                           if not key.endswith('emb')}
+                           if (not key.endswith('emb')) and key != 'att_P_conv'}
     cost += params['l2_penalty_coeff'] * sum([(p ** 2).sum()
                                               for k, p in tparams_to_optimise.items()])
     inputs = [x, y, x_mask, y_mask]

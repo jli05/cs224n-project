@@ -7,6 +7,9 @@ import theano.tensor as tensor
 
 profile=False
 
+def itemlist(tparams):
+    return [v for k, v in tparams.items()]
+
 # name(hyperp, tparams, grads, inputs (list), cost) = f_grad_shared, f_update
 def adam(lr, tparams, grads, inp, cost):
     gshared = [theano.shared(p.get_value() * 0.,

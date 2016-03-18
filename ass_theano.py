@@ -124,7 +124,8 @@ def conditional_distribution(x, y, x_mask, y_pos, params, tparams):
     elif x.ndim == 2:
         mb_size = x.shape[0]
         y_emb = tparams['Yemb'][y[:, (y_pos - C):y_pos].flatten(), :]
-        y_emb = y_emb.flatten().reshape((C * wv_size, mb_size))
+        # each column for a training instance
+        y_emb = y_emb.flatten().reshape((mb_size, C * wv_size)).T
         # each row for a training instance
         # (in order to broadcast the vector b along the row axis)
         h = T.tanh((T.dot(tparams['U'], y_emb)).T + tparams['b'])

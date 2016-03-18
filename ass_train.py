@@ -19,7 +19,7 @@ def main():
                         choices=['baseline', 'attention'],
                         help='context encoder name')
     parser.add_argument('--corpus', required=True,
-                        help='directory of the corpus for training and validation')
+                        help='directory of the corpus e.g data/wikipedia/')
 
     # optimiser
     parser.add_argument('--optimizer', 
